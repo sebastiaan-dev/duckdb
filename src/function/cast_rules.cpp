@@ -309,6 +309,19 @@ static int64_t ImplicitCastVariant(const LogicalType &to) {
 	return TargetTypeCost(to);
 }
 
+static int64_t ImplicitCastToVariant(const LogicalType &from) {
+	switch (from.id()) {
+		case LogicalTypeId::STRUCT:
+		case LogicalTypeId::UNION:
+		case LogicalTypeId::LIST:
+		case LogicalTypeId::MAP:
+		case LogicalTypeId::ARRAY:
+			return TargetTypeCost(LogicalType::VARIANT());
+	default:
+		return -1;
+	}
+}
+
 bool LogicalTypeIsValid(const LogicalType &type) {
 	switch (type.id()) {
 	case LogicalTypeId::STRUCT:
@@ -380,6 +393,10 @@ int64_t ImplicitCastToUnionMember(const LogicalType &from, const LogicalType &to
 }
 
 int64_t CastRules::ImplicitCast(const LogicalType &from, const LogicalType &to) {
+	if (to.id() == LogicalTypeId::VARIANT) {
+		return ImplicitCastToVariant(from);
+	}
+
 	if (from.id() == LogicalTypeId::SQLNULL && to.id() == LogicalTypeId::TEMPLATE) {
 		// Prefer the TEMPLATE type for NULL casts, as it is the most generic
 		return 5;
