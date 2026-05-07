@@ -1,8 +1,10 @@
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/variant_vector.hpp"
+#include "duckdb/common/types/variant.hpp"
 #include "duckdb/function/scalar/variant_functions.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
+#include "duckdb/function/cast/variant/to_variant.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 
@@ -38,7 +40,7 @@ bool VariantKeysBindData::Equals(const FunctionData &other) const {
 	return true;
 }
 
-static void VariantKeys(Vector &variant_vec, const vector<VariantPathComponent> &components, Vector &result,
+static void VariantKeys(const Vector &variant_vec, const vector<VariantPathComponent> &components, Vector &result,
 								  idx_t count) {
 	// TODO: Try from shredded
 	auto &allocator = Allocator::DefaultAllocator();
@@ -103,7 +105,7 @@ static void VariantKeys(Vector &variant_vec, const vector<VariantPathComponent> 
 
 	for (idx_t row = 0; row < count; row++) {
 		if (!validity.RowIsValid(row)) {
-			result_writer.WriteNull();
+			result_writer.WriteList(0);
 			continue;
 		}
 
@@ -137,10 +139,13 @@ static bool GetConstArgument(ClientContext &context, Expression &expr, Value &co
 static unique_ptr<BaseStatistics> VariantKeysPropagateStats(ClientContext &context, FunctionStatisticsInput &input) {
 	auto &child_stats = input.child_stats;
 	auto &bind_data = input.bind_data;
-
-	const auto &info = bind_data->Cast<VariantExtractBindData>();
 	auto &variant_stats = child_stats[0];
+	if (variant_stats.GetStatsType() != StatisticsType::VARIANT_STATS) {
+		// TODO: It is probably sensible to not compute statistics here, but confirm. (we have transformed to another type)
+		return nullptr;
+	}
 
+	const auto &info = bind_data->Cast<VariantKeysBindData>();
 	if (!VariantStats::IsShredded(variant_stats)) {
 		return nullptr;
 	}
@@ -192,13 +197,37 @@ static unique_ptr<FunctionData> VariantKeysBind(BindScalarFunctionInput &input) 
 	}
 }
 
+static void CastParameterToVariant(Vector& input, Vector& result, const idx_t count) {
+	const auto input_type = input.GetType();
+
+	if (input_type == LogicalType::VARIANT()) {
+		result.Reference(input);
+		return;
+	}
+
+	if (input_type == LogicalType::JSON()) {
+		VectorOperations::DefaultTryCast(input, result, count, nullptr);
+		return;
+	}
+
+	if (input_type == LogicalType::VARCHAR) {
+		//! Save on a redundant parse step, and in case of a malformed object let it fail in the cast.
+		Vector json_vec(LogicalType::JSON());
+		json_vec.Reinterpret(input);
+		VectorOperations::DefaultTryCast(json_vec, result, count, nullptr);
+		return;
+	}
+
+	throw InternalException("Unsupported input type for variant_keys, found: %s", input_type.ToString());
+}
+
 static void VariantKeysFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	const auto count = input.size();
 
 	D_ASSERT(input.ColumnCount() == 1 || input.ColumnCount() == 2);
 
-	auto &variant_vec = input.data[0];
-	D_ASSERT(variant_vec.GetType() == LogicalType::VARIANT());
+	Vector variant_vec(LogicalType::VARIANT());
+	CastParameterToVariant(input.data[0], variant_vec, count);
 
 	if (input.ColumnCount() == 2) {
 		const auto &path = input.data[1];
@@ -217,13 +246,12 @@ static void VariantKeysFunction(DataChunk &input, ExpressionState &state, Vector
 	}
 }
 
-ScalarFunctionSet VariantKeysFun::GetFunctions() {
-	const auto variant_type = LogicalType::VARIANT();
 
-	ScalarFunctionSet fun_set;
+
+static void AddFunctionsWithParameterType(ScalarFunctionSet &fun_set, const LogicalType &input_type) {
 	ScalarFunction variant_keys("variant_keys", {}, LogicalType::LIST(LogicalType::VARCHAR), VariantKeysFunction, VariantKeysBind, VariantKeysPropagateStats);
 
-	variant_keys.GetSignature().AddParameter(variant_type);
+	variant_keys.GetSignature().AddParameter(input_type);
 	fun_set.AddFunction(variant_keys);
 
 	variant_keys.GetSignature().AddParameter(LogicalType::VARCHAR);
@@ -232,6 +260,13 @@ ScalarFunctionSet VariantKeysFun::GetFunctions() {
 	variant_keys.GetSignature().GetParameter(1).SetType(LogicalType::LIST(LogicalType::VARCHAR));
 	variant_keys.SetReturnType(LogicalType::LIST(LogicalType::LIST(LogicalType::VARCHAR)));
 	fun_set.AddFunction(variant_keys);
+}
+
+ScalarFunctionSet VariantKeysFun::GetFunctions() {
+	ScalarFunctionSet fun_set;
+
+	AddFunctionsWithParameterType(fun_set, LogicalType::VARIANT());
+	AddFunctionsWithParameterType(fun_set, LogicalType::VARCHAR);
 
 	return fun_set;
 }
