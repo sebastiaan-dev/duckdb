@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb/function/cast/variant/list_to_variant.hpp"
+#include "duckdb/function/cast/variant/map_to_variant.hpp"
 #include "duckdb/function/cast/variant/array_to_variant.hpp"
 #include "duckdb/function/cast/variant/json_to_variant.hpp"
 #include "duckdb/function/cast/variant/struct_to_variant.hpp"
@@ -28,6 +29,8 @@ bool ConvertToVariant(ToVariantSourceData &source, ToVariantGlobalResultData &re
 	if (type.IsNested()) {
 		switch (logical_type) {
 		case LogicalTypeId::MAP:
+			return ConvertMapToVariant<WRITE_DATA, IGNORE_NULLS>(source, result, count, selvec, values_index_selvec,
+									      is_root);
 		case LogicalTypeId::LIST:
 			return ConvertListToVariant<WRITE_DATA, IGNORE_NULLS>(source, result, count, selvec, values_index_selvec,
 			                                                      is_root);
