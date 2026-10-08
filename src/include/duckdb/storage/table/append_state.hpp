@@ -29,12 +29,16 @@ class RowGroupSegmentTree;
 struct TableAppendState;
 
 struct SuballocationBlock {
-	//! The current block being allocated from.
-	shared_ptr<BlockHandle> block;
-	//! The block id
-	block_id_t block_id = INVALID_BLOCK;
-	//! The offset into the block
-	idx_t allocated = 0;
+	struct OpenBlock {
+		//! The segments keep the block alive, so it is released once they are gone
+		weak_ptr<BlockHandle> block;
+		//! The offset into the block
+		idx_t allocated;
+	};
+	//! The maximum number of partially filled blocks to allocate from
+	static constexpr idx_t MAX_OPEN_BLOCKS = 4;
+	//! The partially filled blocks being allocated from
+	vector<OpenBlock> blocks;
 
 	unique_ptr<ColumnSegment> CreateTransientSegment(DatabaseInstance &db, const CompressionFunction &function,
 	                                                 const LogicalType &type, const idx_t segment_size,
@@ -89,8 +93,6 @@ struct RowGroupAppendState {
 	unsafe_unique_array<ColumnAppendState> states;
 	//! Offset within the row_group
 	idx_t offset_in_row_group;
-	//! A sub-allocation block for transient storage
-	SuballocationBlock transient;
 };
 
 struct TableAppendState {

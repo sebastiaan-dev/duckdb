@@ -1,0 +1,82 @@
+# name: test/sql/storage/buffer_manager/in_memory_table_memory.test
+# description: Memory of in-memory tables stays close to the size of their data
+# group: [buffer_manager]
+
+require block_size 262144
+
+require vector_size 2048
+
+# 10 row groups of two BIGINT columns: 1228800 * 16 bytes of data
+# The allowed overhead covers validity masks and partially filled segments
+
+statement ok
+CREATE TEMP TABLE memory_before AS SELECT memory_usage_bytes AS bytes FROM duckdb_memory() WHERE tag = 'IN_MEMORY_TABLE'
+
+# Non-parallel insert, which appends every chunk with a new append state
+statement ok
+SET threads=1
+
+statement ok
+CREATE TEMP TABLE serial_insert AS SELECT i AS a, i * 3 AS b FROM range(1228800) r(i)
+
+query I
+SELECT CASE WHEN m.memory_usage_bytes - b.bytes < 1.2 * 1228800 * 16 THEN 'ok'
+            ELSE error(concat('serial insert uses ', m.memory_usage_bytes - b.bytes, ' bytes')) END
+FROM duckdb_memory() m, memory_before b WHERE m.tag = 'IN_MEMORY_TABLE'
+----
+ok
+
+statement ok
+DROP TABLE serial_insert
+
+statement ok
+DROP TABLE memory_before
+
+statement ok
+CREATE TEMP TABLE memory_before AS SELECT memory_usage_bytes AS bytes FROM duckdb_memory() WHERE tag = 'IN_MEMORY_TABLE'
+
+# Parallel insert
+statement ok
+SET threads=4
+
+statement ok
+CREATE TEMP TABLE parallel_insert AS SELECT i AS a, i * 3 AS b FROM range(1228800) r(i)
+
+query I
+SELECT CASE WHEN m.memory_usage_bytes - b.bytes < 1.2 * 1228800 * 16 THEN 'ok'
+            ELSE error(concat('parallel insert uses ', m.memory_usage_bytes - b.bytes, ' bytes')) END
+FROM duckdb_memory() m, memory_before b WHERE m.tag = 'IN_MEMORY_TABLE'
+----
+ok
+
+statement ok
+DROP TABLE parallel_insert
+
+statement ok
+DROP TABLE memory_before
+
+statement ok
+CREATE TEMP TABLE memory_before AS SELECT memory_usage_bytes AS bytes FROM duckdb_memory() WHERE tag = 'IN_MEMORY_TABLE'
+
+# Many small inserts, each with their own append state
+statement ok
+CREATE TEMP TABLE small_inserts (a BIGINT, b BIGINT)
+
+loop i 0 60
+
+statement ok
+INSERT INTO small_inserts SELECT i, i * 3 FROM range({i} * 20480, ({i} + 1) * 20480) r(i)
+
+endloop
+
+query I
+SELECT CASE WHEN m.memory_usage_bytes - b.bytes < 1.2 * 1228800 * 16 THEN 'ok'
+            ELSE error(concat('small inserts use ', m.memory_usage_bytes - b.bytes, ' bytes')) END
+FROM duckdb_memory() m, memory_before b WHERE m.tag = 'IN_MEMORY_TABLE'
+----
+ok
+
+query III
+SELECT count(*), sum(a), sum(b) FROM small_inserts
+----
+1228800	754974105600	2264922316800

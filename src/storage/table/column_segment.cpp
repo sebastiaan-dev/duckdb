@@ -72,17 +72,45 @@ unique_ptr<ColumnSegment> SuballocationBlock::CreateTransientSegment(DatabaseIns
 	auto &buffer_manager = BufferManager::GetBufferManager(db);
 	D_ASSERT(&buffer_manager == &block_manager.buffer_manager);
 
-	//	Do we have enough room in the block?
-	if (!block || block->GetBlockSize() < allocated + segment_size) {
-		auto &temp_block_manger = buffer_manager.GetTemporaryBlockManager();
-		block = buffer_manager.RegisterTransientMemory(temp_block_manger.GetBlockSize(), temp_block_manger);
-		allocated = 0;
-		block_id = block->BlockId();
+	// Use the open block with the least remaining space that still fits the segment
+	shared_ptr<BlockHandle> block;
+	optional_idx best_idx;
+	idx_t best_remaining = 0;
+	for (idx_t i = 0; i < blocks.size();) {
+		auto open_block = blocks[i].block.lock();
+		if (!open_block) {
+			blocks.erase_at(i);
+			continue;
+		}
+		const auto remaining = open_block->GetBlockSize() - blocks[i].allocated;
+		if (remaining >= segment_size && (!best_idx.IsValid() || remaining < best_remaining)) {
+			block = std::move(open_block);
+			best_idx = i;
+			best_remaining = remaining;
+		}
+		i++;
+	}
+	if (!best_idx.IsValid()) {
+		if (blocks.size() == MAX_OPEN_BLOCKS) {
+			// stop allocating from the block with the least remaining space
+			idx_t fullest_idx = 0;
+			for (idx_t i = 1; i < blocks.size(); i++) {
+				if (blocks[i].allocated > blocks[fullest_idx].allocated) {
+					fullest_idx = i;
+				}
+			}
+			blocks.erase_at(fullest_idx);
+		}
+		auto &temp_block_manager = buffer_manager.GetTemporaryBlockManager();
+		block = buffer_manager.RegisterTransientMemory(temp_block_manager.GetBlockSize(), temp_block_manager);
+		blocks.push_back(OpenBlock {block, 0});
+		best_idx = blocks.size() - 1;
 	}
 
-	const auto offset = allocated;
-	allocated += segment_size;
-	return make_uniq<ColumnSegment>(db, block, ColumnSegmentType::TRANSIENT, 0U, function,
+	auto &open_block = blocks[best_idx.GetIndex()];
+	const auto offset = open_block.allocated;
+	open_block.allocated += segment_size;
+	return make_uniq<ColumnSegment>(db, std::move(block), ColumnSegmentType::TRANSIENT, 0U, function,
 	                                BaseStatistics::CreateEmpty(type), INVALID_BLOCK, offset, segment_size);
 }
 

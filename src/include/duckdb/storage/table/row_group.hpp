@@ -32,6 +32,7 @@ class DataTable;
 class DuckTableEntry;
 class PartialBlockManager;
 struct DataTableInfo;
+struct SuballocationBlock;
 class ExpressionExecutor;
 class RowGroupCollection;
 class RowGroupWriter;
@@ -336,6 +337,8 @@ private:
 	//! Whether or not `row_number_column_data` is loaded (mutable because `const` can lazy load)
 	mutable atomic<bool> row_number_is_loaded;
 	atomic<bool> has_changes;
+	//! Sub-allocates small transient segments, kept across appends so that their blocks are filled up
+	unique_ptr<SuballocationBlock> transient_allocation;
 };
 
 } // namespace duckdb
